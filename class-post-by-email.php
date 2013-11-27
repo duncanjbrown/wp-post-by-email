@@ -378,73 +378,84 @@ class Post_By_Email {
 			$original_post_content = $post_content;
 			$post_content = $this->filter_valid_shortcodes( $post_content );
 
+			/* Allow plugins to perform actions other than creating posts */
+			/* Return a string from this filter to provide a log message */
 
-			/* create the post */
-			$post_data = compact( 'post_content', 'post_title', 'post_date', 'post_date_gmt', 'post_author', 'post_category', 'post_status', 'tags_input' );
-			$post_data = wp_slash( $post_data );
+			$override = apply_filters( 'post_by_email_override', false, array(
+				'from_email' => $from_email,
+				'post_content' => $post_content,
+				'date' => $post_date_gmt
+			) );
 
-			$post_ID = wp_insert_post( $post_data );
-			if ( is_wp_error( $post_ID ) ) {
-				$log_message .= "\n" . $post_ID->get_error_message();
-				$this->save_error_message( $log_message );
-			}
+			if( $override ) {
+				$log_message .= "<br />" . $override;
+			} else {
+				/* create the post */
+				$post_data = compact( 'post_content', 'post_title', 'post_date', 'post_date_gmt', 'post_author', 'post_category', 'post_status', 'tags_input' );
+				$post_data = wp_slash( $post_data );
 
-			// We couldn't post, for whatever reason. Better move forward to the next email.
-			if ( empty( $post_ID ) )
-				continue;
+				$post_ID = wp_insert_post( $post_data );
+				if ( is_wp_error( $post_ID ) ) {
+					$log_message .= "\n" . $post_ID->get_error_message();
+					$this->save_error_message( $log_message );
+				}
 
-			// save original message sender as post_meta, in case we want it later
-			add_post_meta( $post_ID, 'original_author', $from_email );
+				// We couldn't post, for whatever reason. Better move forward to the next email.
+				if ( empty( $post_ID ) )
+					continue;
+
+				// save original message sender as post_meta, in case we want it later
+				add_post_meta( $post_ID, 'original_author', $from_email );
 
 
-			/* shortcode: custom taxonomies.  [taxname term1 term2 ...] */
-			$tax_input = array();
+				/* shortcode: custom taxonomies.  [taxname term1 term2 ...] */
+				$tax_input = array();
 
-			// get all registered custom taxonomies
-			$args = array(
-				'public'   => true,
-				'_builtin' => false,
-			);
-			$registered_taxonomies = get_taxonomies( $args, 'names', 'and' ); 
+				// get all registered custom taxonomies
+				$args = array(
+					'public'   => true,
+					'_builtin' => false,
+				);
+				$registered_taxonomies = get_taxonomies( $args, 'names', 'and' ); 
 
-			if ( $registered_taxonomies ) {
-				foreach ( $registered_taxonomies as $taxonomy_name ) {
-					$tax_shortcodes = $this->find_shortcode( $taxonomy_name, $original_post_content );
-					if ( count( $tax_shortcodes ) > 0 ) {
-						// pending bug fix: http://core.trac.wordpress.org/ticket/19373
-						//$tax_input[] = array( $taxonomy_name => $tax_shortcodes );
-						wp_set_post_terms( $post_ID, $tax_shortcodes, $taxonomy_name );
+				if ( $registered_taxonomies ) {
+					foreach ( $registered_taxonomies as $taxonomy_name ) {
+						$tax_shortcodes = $this->find_shortcode( $taxonomy_name, $original_post_content );
+						if ( count( $tax_shortcodes ) > 0 ) {
+							// pending bug fix: http://core.trac.wordpress.org/ticket/19373
+							//$tax_input[] = array( $taxonomy_name => $tax_shortcodes );
+							wp_set_post_terms( $post_ID, $tax_shortcodes, $taxonomy_name );
+						}
 					}
 				}
+
+				/* attachments */
+				$attachment_count = $this->save_attachments( $uid, $post_ID );
+
+				if ( $attachment_count > 0 && ! has_shortcode( $post_content, 'gallery' ) ) {
+
+					// add a default gallery if there isn't one already
+					$post_info = array(
+						'ID' => $post_ID,
+						'post_content' => $post_content . '[gallery]',
+					);
+
+					wp_update_post( $post_info );
+				}
+
+				do_action( 'publish_phone', $post_ID );
+
+				if ( '' == $post_title ) {
+					$post_title = __( '(no title)', 'post-by-email' );
+				}
+
+				$pending = '';
+				if ( 'pending' == $post_status ) {
+					$pending = __( ' (pending)', 'post-by-email' );
+				}
+
+				$log_message .= "<br />" . __( 'Posted:', 'post-by-email') . ' <a href="' . get_permalink( $post_ID ) . '">' . esc_html( $post_title ) . '</a>' . $pending;
 			}
-
-			/* attachments */
-			$attachment_count = $this->save_attachments( $uid, $post_ID );
-
-			if ( $attachment_count > 0 && ! has_shortcode( $post_content, 'gallery' ) ) {
-
-				// add a default gallery if there isn't one already
-				$post_info = array(
-					'ID' => $post_ID,
-					'post_content' => $post_content . '[gallery]',
-				);
-
-				wp_update_post( $post_info );
-			}
-
-			do_action( 'publish_phone', $post_ID );
-
-			if ( '' == $post_title ) {
-				$post_title = __( '(no title)', 'post-by-email' );
-			}
-
-			$pending = '';
-			if ( 'pending' == $post_status ) {
-				$pending = __( ' (pending)', 'post-by-email' );
-			}
-
-			$log_message .= "<br />" . __( 'Posted:', 'post-by-email') . ' <a href="' . get_permalink( $post_ID ) . '">' . esc_html( $post_title ) . '</a>' . $pending;
-
 		} // end foreach
 
 		$this->save_log_message( $log_message );
